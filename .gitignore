@@ -1,0 +1,15 @@
+# Byte-compiled
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environment
+.venv/
+env/
+venv/
+
+# Packaging
+*.egg-info/
+dist/
+build/
