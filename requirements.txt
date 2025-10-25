@@ -2,3 +2,12 @@ fastapi
 pydantic
 docling
 uvicorn
+gradio
+requests
+langchain
+langchain-openai
+langchain-qdrant
+qdrant-client
+python-dotenv
+PyPDF2
+python-docx
