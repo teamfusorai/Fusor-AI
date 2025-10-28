@@ -5,12 +5,15 @@ A powerful RAG-based chatbot platform that allows users to create personalized A
 ## ✨ Features
 
 - **📁 Document Upload**: Support for PDF, DOCX, TXT, and MD files
+- **🌐 URL Scraping**: Upload content from websites or sitemaps
 - **🧠 Smart RAG Pipeline**: Optimized retrieval with citations and confidence scores
 - **👥 Multi-Tenant**: Each user can create multiple bots with separate knowledge bases
-- **🎨 User-Friendly Interface**: Beautiful Gradio web interface
+- **🎨 Modern UI**: Beautiful TypeScript/React frontend with dark theme
 - **⚡ Fast Processing**: Document processing in seconds, not minutes
 - **📊 Analytics**: View chunk usage, confidence scores, and source citations
 - **🔒 Data Isolation**: Complete separation between users and bots
+- **🔄 Real-time Updates**: Live knowledge base statistics and refresh
+- **📱 Responsive Design**: Works on desktop and mobile devices
 
 ## 🚀 Quick Start Guide
 
@@ -34,12 +37,29 @@ python3 -m venv venv
 source venv/bin/activate
 ```
 
-**Install dependencies:**
+**Install Python dependencies:**
 ```bash
 pip install -r requirements.txt
 ```
 
-### Step 3: Configure Environment Variables
+### Step 3: Set Up Frontend (TypeScript/React)
+
+**Navigate to frontend directory:**
+```bash
+cd Frontend
+```
+
+**Install Node.js dependencies:**
+```bash
+npm install
+```
+
+**Go back to project root:**
+```bash
+cd ..
+```
+
+### Step 4: Configure Environment Variables
 
 Create a `.env` file in the project root:
 ```env
@@ -53,7 +73,7 @@ QDRANT_PORT=6333
 2. Create a new API key
 3. Copy and paste it in your `.env` file
 
-### Step 4: Start Qdrant Vector Database
+### Step 5: Start Qdrant Vector Database
 
 **Option A: Using Docker (Recommended)**
 ```bash
@@ -66,11 +86,11 @@ pip install qdrant-client
 python -m qdrant_client.http
 ```
 
-### Step 5: Launch the Platform
+### Step 6: Launch the Platform
 
-**Start both services at once:**
+**🚀 Start everything at once (Recommended):**
 ```bash
-python start_platform.py
+python start_full_platform.py
 ```
 
 **Or start services separately:**
@@ -78,22 +98,24 @@ python start_platform.py
 # Terminal 1: Start FastAPI backend
 python main.py
 
-# Terminal 2: Start Gradio interface
-python gradio_interface.py
+# Terminal 2: Start TypeScript frontend
+cd Frontend
+npm run dev
 ```
 
-### Step 6: Access the Platform
+### Step 7: Access the Platform
 
-- **🎨 Main Interface**: http://localhost:7860
+- **🎨 Main Interface**: http://localhost:3000 (TypeScript Frontend)
 - **📡 API Documentation**: http://localhost:8000/docs
 - **🔧 API Endpoints**: http://localhost:8000
+- **🗄️ Qdrant Dashboard**: http://localhost:6333/dashboard
 
 ## 📖 How to Use
 
 ### Creating Your First Knowledge Base
 
 1. **Open the Platform**
-   - Go to http://localhost:7860
+   - Go to http://localhost:3000
    - You'll see the "Upload Documents" tab
 
 2. **Enter Your Details**
@@ -101,31 +123,32 @@ python gradio_interface.py
    - **Bot Name**: Name your chatbot (e.g., `support_bot`)
 
 3. **Upload Documents**
-   - Click "Upload Documents" and select your files
+   - Drag and drop files into the upload zone, or click to browse
    - Supported formats: PDF, DOCX, TXT, MD
    - You can upload multiple files at once
+   - Or enter a website URL to scrape content
 
 4. **Process Documents**
-   - Click "🚀 Upload & Process Documents"
+   - Click "Create Knowledge Base"
    - Wait for processing to complete (usually 2-5 seconds)
    - You'll see a success message with chunk count
 
 ### Chatting with Your Bot
 
 1. **Go to Chat Tab**
-   - Click "💬 Chat with Bot" tab
-   - Enter your username and bot name
-   - Or select from the dropdown if you have multiple bots
+   - Click "Chat with Bot" tab
+   - Select your knowledge base from the dropdown
+   - Or enter your username and bot name manually
 
 2. **Start Chatting**
    - Type your question in the message box
    - Press Enter or click "Send"
-   - Get responses with citations and confidence scores
+   - Get responses with citations and chunk usage info
 
 3. **View Knowledge Base Info**
    - See your current knowledge base in the sidebar
    - View all available knowledge bases
-   - Check chunk usage and confidence scores
+   - Check chunk usage and statistics
 
 ## 🎯 Example Usage
 
@@ -234,11 +257,13 @@ curl -X POST http://localhost:8000/query \
 - Ensure FastAPI backend is running on port 8000
 - Check if Qdrant is running on port 6333
 - Verify your `.env` file has the correct API key
+- Make sure frontend is running on port 3000
 
 **"Module not found"**
 - Make sure virtual environment is activated
 - Run `pip install -r requirements.txt`
 - Check Python version (3.8+ required)
+- For frontend issues, run `cd Frontend && npm install`
 
 **Slow document processing**
 - The system uses fast fallback processing
@@ -250,7 +275,7 @@ curl -X POST http://localhost:8000/query \
 1. **Check the logs** in your terminal
 2. **Verify all services are running**:
    - FastAPI: http://localhost:8000
-   - Gradio: http://localhost:7860
+   - Frontend: http://localhost:3000
    - Qdrant: http://localhost:6333
 3. **Test with the test script**: `python test.py`
 
@@ -258,9 +283,9 @@ curl -X POST http://localhost:8000/query \
 
 ```
 ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│   Gradio UI     │    │   FastAPI       │    │   Qdrant        │
-│   (Port 7860)   │◄──►│   Backend       │◄──►│   Vector DB     │
-│                 │    │   (Port 8000)   │    │   (Port 6333)   │
+│   React/TS      │    │   FastAPI       │    │   Qdrant        │
+│   Frontend      │◄──►│   Backend       │◄──►│   Vector DB     │
+│   (Port 3000)   │    │   (Port 8000)   │    │   (Port 6333)   │
 └─────────────────┘    └─────────────────┘    └─────────────────┘
                               │
                               ▼
@@ -278,12 +303,19 @@ fusor-ai/
 ├── 📄 main.py                 # FastAPI application
 ├── 📄 data_ingestion.py       # Document processing
 ├── 📄 search_engine.py        # RAG pipeline
-├── 📄 gradio_interface.py     # Web interface
+├── 📄 gradio_interface.py     # Legacy Gradio interface
 ├── 📄 config.py              # Configuration
 ├── 📄 test.py                # Testing script
-├── 📄 start_platform.py      # Startup script
-├── 📄 requirements.txt       # Dependencies
+├── 📄 start_full_platform.py # Full platform startup script
+├── 📄 requirements.txt       # Python dependencies
 ├── 📄 .env                   # Environment variables
+├── 📁 Frontend/              # TypeScript/React frontend
+│   ├── 📄 package.json       # Node.js dependencies
+│   ├── 📄 vite.config.ts     # Vite configuration
+│   ├── 📄 tailwind.config.js # Tailwind CSS config
+│   ├── 📁 components/        # React components
+│   ├── 📁 services/          # API services
+│   └── 📁 styles/            # CSS styles
 └── 📁 qdrant_storage/        # Vector database storage
 ```
 

@@ -22,11 +22,27 @@ def get_sitemap_urls(base_url: str, sitemap_filename: str = "sitemap.xml") -> Li
     try:
         sitemap_url = urljoin(base_url, sitemap_filename)
 
-        # Fetch sitemap URL
-        response = requests.get(sitemap_url, timeout=10)
+        # Add headers to mimic a real browser
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.5',
+            'Accept-Encoding': 'gzip, deflate',
+            'Connection': 'keep-alive',
+        }
 
-        # # Return just the base URL if sitemap not found
+        # Fetch sitemap URL
+        response = requests.get(sitemap_url, timeout=15, headers=headers)
+
+        # Handle different HTTP status codes gracefully
         if response.status_code == 404:
+            print(f"Sitemap not found at {sitemap_url}, returning base URL")
+            return [base_url.rstrip("/")]
+        elif response.status_code == 403:
+            print(f"Access forbidden for {sitemap_url}, returning base URL")
+            return [base_url.rstrip("/")]
+        elif response.status_code == 429:
+            print(f"Rate limited for {sitemap_url}, returning base URL")
             return [base_url.rstrip("/")]
 
         response.raise_for_status()
@@ -45,14 +61,22 @@ def get_sitemap_urls(base_url: str, sitemap_filename: str = "sitemap.xml") -> Li
         else:
             urls = [elem.text for elem in root.findall(".//loc")]
 
+        # If no URLs found, return base URL
+        if not urls:
+            print(f"No URLs found in sitemap {sitemap_url}, returning base URL")
+            return [base_url.rstrip("/")]
+
         return urls
 
     except requests.RequestException as e:
-        raise ValueError(f"Failed to fetch sitemap: {str(e)}")
+        print(f"Request failed for {sitemap_url}: {e}")
+        return [base_url.rstrip("/")]
     except ET.ParseError as e:
-        raise ValueError(f"Failed to parse sitemap XML: {str(e)}")
+        print(f"XML parsing failed for {sitemap_url}: {e}")
+        return [base_url.rstrip("/")]
     except Exception as e:
-        raise ValueError(f"Unexpected error processing sitemap: {str(e)}")
+        print(f"Unexpected error processing {sitemap_url}: {e}")
+        return [base_url.rstrip("/")]
 
 
 if __name__ == "__main__":

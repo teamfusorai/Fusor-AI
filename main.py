@@ -1,13 +1,29 @@
 import getpass
 import os
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
 from qdrant_client import QdrantClient
+import json
 import config
 import data_ingestion
 import search_engine
 
-app = FastAPI()
+app = FastAPI(
+    title="Multi-Tenant Chatbot Platform API",
+    description="API for document ingestion and chatbot querying",
+    version="1.0.0"
+)
+
+# Add CORS middleware for frontend integration
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000", "http://localhost:5173", "http://127.0.0.1:3000", "http://127.0.0.1:5173"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 app.include_router(data_ingestion.router)
 app.include_router(search_engine.router)
 
@@ -57,8 +73,8 @@ async def list_knowledge_bases():
                             knowledge_bases.append({
                                 "user_id": user_id,
                                 "bot_id": bot_id,
-                                "collection_name": collection_name,
-                                "points_count": points_count
+                                "chunks_count": points_count,
+                                "created_at": collection_info.status  # Use status as created_at placeholder
                             })
                 
                 except Exception as e:
@@ -69,6 +85,134 @@ async def list_knowledge_bases():
         
     except Exception as e:
         return {"error": f"Failed to list knowledge bases: {str(e)}"}
+
+@app.get("/knowledge-bases/{user_id}/{bot_id}/stats")
+async def get_knowledge_base_stats(user_id: str, bot_id: str):
+    """Get statistics for a specific knowledge base"""
+    try:
+        collection_name = f"{config.COLLECTION_PREFIX}{user_id}"
+        namespace = f"{config.NAMESPACE_PREFIX}{bot_id}"
+        
+        if not qdrant_client.collection_exists(collection_name):
+            return {"error": "Knowledge base not found"}
+        
+        # Get collection info
+        collection_info = qdrant_client.get_collection(collection_name)
+        
+        # Count points in specific namespace
+        namespace_points = qdrant_client.scroll(
+            collection_name=collection_name,
+            scroll_filter={
+                "must": [
+                    {
+                        "key": "metadata.namespace",
+                        "match": {"value": namespace}
+                    }
+                ]
+            },
+            limit=10000,  # Large limit to count all
+            with_payload=False
+        )[0]
+        
+        chunks_count = len(namespace_points)
+        
+        return {
+            "chunks_count": chunks_count,
+            "last_updated": collection_info.status,
+            "user_id": user_id,
+            "bot_id": bot_id
+        }
+        
+    except Exception as e:
+        return {"error": f"Failed to get knowledge base stats: {str(e)}"}
+
+@app.delete("/knowledge-bases/{user_id}/{bot_id}")
+async def delete_knowledge_base(user_id: str, bot_id: str):
+    """Delete a specific knowledge base (bot namespace)"""
+    try:
+        collection_name = f"{config.COLLECTION_PREFIX}{user_id}"
+        namespace = f"{config.NAMESPACE_PREFIX}{bot_id}"
+        
+        if not qdrant_client.collection_exists(collection_name):
+            return {"error": "Knowledge base not found"}
+        
+        # Get all points in the namespace
+        points = qdrant_client.scroll(
+            collection_name=collection_name,
+            scroll_filter={
+                "must": [
+                    {
+                        "key": "metadata.namespace",
+                        "match": {"value": namespace}
+                    }
+                ]
+            },
+            limit=10000,
+            with_payload=False
+        )[0]
+        
+        if points:
+            # Delete all points in the namespace
+            point_ids = [point.id for point in points]
+            qdrant_client.delete(
+                collection_name=collection_name,
+                points_selector=point_ids
+            )
+        
+        return {"status": "success", "message": f"Deleted knowledge base {user_id}/{bot_id}"}
+        
+    except Exception as e:
+        return {"error": f"Failed to delete knowledge base: {str(e)}"}
+
+@app.websocket("/ws/chat/{user_id}/{bot_id}")
+async def websocket_chat(websocket: WebSocket, user_id: str, bot_id: str):
+    """WebSocket endpoint for real-time chat"""
+    await websocket.accept()
+    
+    try:
+        while True:
+            # Receive message from client
+            data = await websocket.receive_text()
+            message_data = json.loads(data)
+            
+            if "message" not in message_data:
+                await websocket.send_text(json.dumps({
+                    "error": "Missing 'message' field in request"
+                }))
+                continue
+            
+            # Process message using existing search engine
+            try:
+                response = search_engine.search_and_answer(
+                    query=message_data["message"],
+                    user_id=user_id,
+                    bot_id=bot_id,
+                    top_k=message_data.get("top_k", 3)
+                )
+                
+                # Send response back to client
+                await websocket.send_text(json.dumps({
+                    "answer": response["answer"],
+                    "citations": response["citations"],
+                    "chunks_used": response["chunks_used"],
+                    "confidence_scores": response.get("confidence_scores", [])
+                }))
+                
+            except Exception as e:
+                await websocket.send_text(json.dumps({
+                    "error": f"Failed to process query: {str(e)}"
+                }))
+                
+    except WebSocketDisconnect:
+        print(f"Client {user_id}/{bot_id} disconnected")
+    except Exception as e:
+        print(f"WebSocket error: {e}")
+        try:
+            await websocket.send_text(json.dumps({
+                "error": f"WebSocket error: {str(e)}"
+            }))
+        except:
+            pass
 
 @app.get("/")
 async def root():

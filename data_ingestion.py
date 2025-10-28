@@ -24,10 +24,16 @@ os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
 router = APIRouter()
 load_dotenv()
 
-# Force use of fallback method for faster processing
-converter = None
-DOCLING_AVAILABLE = False
-print("Using fast fallback document processing (no heavy model downloads)")
+# Initialize docling for URL processing, fallback for documents
+try:
+    from docling.document_converter import DocumentConverter
+    converter = DocumentConverter()
+    DOCLING_AVAILABLE = True
+    print("Docling available for URL processing")
+except ImportError:
+    converter = None
+    DOCLING_AVAILABLE = False
+    print("Docling not available, using fallback for all processing")
 
 def extract_text_fallback(file_path: str) -> str:
     """Fallback text extraction for when Docling fails"""
@@ -58,6 +64,44 @@ def extract_text_fallback(file_path: str) -> str:
             
     except Exception as e:
         return f"Error extracting text: {str(e)}"
+
+def extract_text_from_url(url: str) -> str:
+    """Extract text from URL using requests and BeautifulSoup"""
+    try:
+        import requests
+        from bs4 import BeautifulSoup
+        
+        # Add headers to mimic a real browser
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.5',
+            'Accept-Encoding': 'gzip, deflate',
+            'Connection': 'keep-alive',
+        }
+        
+        response = requests.get(url, timeout=15, headers=headers)
+        response.raise_for_status()
+        
+        # Parse HTML content
+        soup = BeautifulSoup(response.content, 'html.parser')
+        
+        # Remove script and style elements
+        for script in soup(["script", "style", "nav", "footer", "header"]):
+            script.decompose()
+        
+        # Extract text
+        text = soup.get_text()
+        
+        # Clean up text
+        lines = (line.strip() for line in text.splitlines())
+        chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
+        text = ' '.join(chunk for chunk in chunks if chunk)
+        
+        return text.strip()
+        
+    except Exception as e:
+        return f"Error extracting text from URL: {str(e)}"
 
 QDRANT_HOST = config.QDRANT_HOST
 QDRANT_PORT = config.QDRANT_PORT
@@ -123,12 +167,77 @@ async def ingest(
             pass
 
     elif url:
-        if "sitemap.xml" in url:
-            sitemap_urls = get_sitemap_urls(url)
-            sources = list(converter.convert_all(sitemap_urls))
+        if DOCLING_AVAILABLE and converter:
+            # Use docling for URL processing
+            if "sitemap.xml" in url:
+                try:
+                    sitemap_urls = get_sitemap_urls(url)
+                    sources = list(converter.convert_all(sitemap_urls))
+                except Exception as e:
+                    # Fallback to single page if sitemap fails
+                    print(f"Sitemap processing failed: {e}")
+                    print(f"Falling back to single page processing: {url}")
+                    result = converter.convert(url)
+                    sources.append(result)
+            else:
+                result = converter.convert(url)
+                sources.append(result)
         else:
-            result = converter.convert(url)
-            sources.append(result)
+            # Fallback to simple URL processing if docling not available
+            print("Docling not available, using simple URL processing")
+            if "sitemap.xml" in url:
+                try:
+                    sitemap_urls = get_sitemap_urls(url)
+                    for sitemap_url in sitemap_urls:
+                        text = extract_text_from_url(sitemap_url)
+                        if text and not text.startswith("Error"):
+                            class SimpleResult:
+                                def __init__(self, text, url):
+                                    self.document = SimpleDocument(text)
+                                    self.url = url
+                            
+                            class SimpleDocument:
+                                def __init__(self, text):
+                                    self.text = text
+                                
+                                def export_to_markdown(self):
+                                    return self.text
+                            
+                            sources.append(SimpleResult(text, sitemap_url))
+                except Exception as e:
+                    print(f"Sitemap processing failed: {e}")
+                    print(f"Falling back to single page processing: {url}")
+                    text = extract_text_from_url(url)
+                    if text and not text.startswith("Error"):
+                        class SimpleResult:
+                            def __init__(self, text, url):
+                                self.document = SimpleDocument(text)
+                                self.url = url
+                        
+                        class SimpleDocument:
+                            def __init__(self, text):
+                                self.text = text
+                            
+                            def export_to_markdown(self):
+                                return self.text
+                        
+                        sources.append(SimpleResult(text, url))
+            else:
+                text = extract_text_from_url(url)
+                if text and not text.startswith("Error"):
+                    class SimpleResult:
+                        def __init__(self, text, url):
+                            self.document = SimpleDocument(text)
+                            self.url = url
+                    
+                    class SimpleDocument:
+                        def __init__(self, text):
+                            self.text = text
+                        
+                        def export_to_markdown(self):
+                            return self.text
+                    
+                    sources.append(SimpleResult(text, url))
     else:
         return {"error": "Either 'file' or 'url' must be provided."}
 
