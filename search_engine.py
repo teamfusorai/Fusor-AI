@@ -1,5 +1,6 @@
 import os
 import re
+from typing import Optional
 from fastapi import FastAPI, Query, Request, UploadFile, File, Form, APIRouter
 from pydantic import BaseModel
 from dotenv import load_dotenv
@@ -7,6 +8,7 @@ from langchain_openai import OpenAIEmbeddings, ChatOpenAI
 from qdrant_client import QdrantClient
 from qdrant_client.models import Filter, FieldCondition, MatchValue
 import config
+import chatbot_config
 
 # -------------------------
 # Setup
@@ -19,19 +21,29 @@ app = FastAPI()
 QDRANT_HOST = config.QDRANT_HOST
 QDRANT_PORT = config.QDRANT_PORT
 
-# Connect to Qdrant
-qdrant_client = QdrantClient(host=QDRANT_HOST, port=QDRANT_PORT)
-
-# Embeddings (same as ingestion)
-EMBEDDING_MODEL = OpenAIEmbeddings(
-    model=config.EMBEDDING_MODEL_NAME,
-    api_key=os.getenv("OPENAI_API_KEY")
+# Connect to Qdrant with connection pooling
+qdrant_client = QdrantClient(
+    host=QDRANT_HOST, 
+    port=QDRANT_PORT,
+    timeout=config.TIMEOUT_SECONDS,
+    prefer_grpc=False  # HTTP is faster for most use cases
 )
 
-# Chat LLM for final response
+# Embeddings (same as ingestion) with timeout configuration
+EMBEDDING_MODEL = OpenAIEmbeddings(
+    model=config.EMBEDDING_MODEL_NAME,
+    api_key=os.getenv("OPENAI_API_KEY"),
+    timeout=config.TIMEOUT_SECONDS,
+    max_retries=config.MAX_RETRIES
+)
+
+# Chat LLM for final response with timeout configuration
 CHAT_MODEL = ChatOpenAI(
     model=config.CHAT_MODEL_NAME,
-    api_key=os.getenv("OPENAI_API_KEY")
+    api_key=os.getenv("OPENAI_API_KEY"),
+    timeout=config.TIMEOUT_SECONDS,
+    max_retries=config.MAX_RETRIES,
+    temperature=0.1  # Lower temperature for faster, more deterministic responses
 )
 
 
@@ -43,6 +55,12 @@ class QueryRequest(BaseModel):
     user_id: str = "default_user"
     bot_id: str = "default_bot"
     top_k: int = 3
+    # Optional chatbot configuration - if not provided, will be fetched from Bubble.io
+    system_prompt: Optional[str] = None
+    tone: Optional[str] = None
+    industry: Optional[str] = None
+    chatbot_name: Optional[str] = None
+    description: Optional[str] = None
 
 
 # -------------------------
@@ -85,12 +103,22 @@ def preprocess_query(query: str) -> str:
 # -------------------------
 # Core Search + Answer
 # -------------------------
-def search_and_answer(query: str, top_k: int = 3, user_id: str = "default_user", bot_id: str = "default_bot"):
+async def search_and_answer(
+    query: str, 
+    top_k: int = 3, 
+    user_id: str = "default_user", 
+    bot_id: str = "default_bot",
+    system_prompt: Optional[str] = None,
+    tone: Optional[str] = None,
+    industry: Optional[str] = None,
+    chatbot_name: Optional[str] = None,
+    description: Optional[str] = None
+):
     # 1. Preprocess query
     processed_query = preprocess_query(query)
     
-    # 2. Embed query
-    query_embedding = EMBEDDING_MODEL.embed_query(processed_query)
+    # 2. Embed query (async for non-blocking operation)
+    query_embedding = await EMBEDDING_MODEL.aembed_query(processed_query)
     
     # 3. Setup collection and namespace
     collection_name = f"{config.COLLECTION_PREFIX}{user_id}"
@@ -137,27 +165,30 @@ def search_and_answer(query: str, top_k: int = 3, user_id: str = "default_user",
         }
         retrieved_chunks.append(chunk_data)
     
-    # 7. Build context with citations
+    #context + citations
     context_parts = []
     for i, chunk in enumerate(retrieved_chunks, 1):
         context_parts.append(f"[{i}] {chunk['content']}")
     
     context = "\n\n".join(context_parts)
     
-    # 8. Build citations
     citations = [f"[{i}] {chunk['source']}" for i, chunk in enumerate(retrieved_chunks, 1)]
     
-    # 9. Ask LLM with enhanced context
-    system_prompt = """You are a helpful assistant. Use the provided context to answer questions accurately. 
-When referencing information, use the citation numbers [1], [2], etc. provided in the context.
-If the context doesn't contain enough information to answer the question, say so clearly."""
+    # Build smart system prompt using chatbot configuration
+    final_system_prompt = chatbot_config.build_smart_system_prompt(
+        chatbot_name=chatbot_name,
+        description=description,
+        industry=industry,
+        tone=tone,
+        custom_system_prompt=system_prompt
+    )
     
     messages = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": f"Context:\n{context}\n\nQuestion: {query}"}
+        {"role": "system", "content": final_system_prompt},
+        {"role": "user", "content": f"{context}\n\nQuestion: {query}"}
     ]
 
-    response = CHAT_MODEL.invoke(messages)
+    response = await CHAT_MODEL.ainvoke(messages)
     
     # 10. Return response with metadata
     return {
@@ -173,11 +204,51 @@ If the context doesn't contain enough information to answer the question, say so
 # -------------------------
 @router.post("/query")
 async def query_endpoint(request: QueryRequest):
-    result = search_and_answer(
+    # Use config from request if provided, otherwise try to fetch from Bubble.io
+    # If any config field is provided, use request values and skip Bubble.io fetch
+    has_config = any([
+        request.system_prompt,
+        request.tone,
+        request.industry,
+        request.chatbot_name,
+        request.description
+    ])
+    
+    if has_config:
+        # Use request values directly (Bubble.io sends config in request)
+        system_prompt = request.system_prompt
+        tone = request.tone
+        industry = request.industry
+        chatbot_name = request.chatbot_name
+        description = request.description
+    else:
+        # Try to fetch from Bubble.io (optional, will work if API is available)
+        chatbot_config_data = await chatbot_config.get_chatbot_config(request.user_id, request.bot_id)
+        
+        if chatbot_config_data:
+            system_prompt = chatbot_config_data.get("system_prompt")
+            tone = chatbot_config_data.get("tone")
+            industry = chatbot_config_data.get("industry")
+            chatbot_name = chatbot_config_data.get("chatbot_name")
+            description = chatbot_config_data.get("description")
+        else:
+            # No config available, use None (will use default prompts)
+            system_prompt = None
+            tone = None
+            industry = None
+            chatbot_name = None
+            description = None
+    
+    result = await search_and_answer(
         query=request.query,
         top_k=request.top_k,
         user_id=request.user_id,
-        bot_id=request.bot_id
+        bot_id=request.bot_id,
+        system_prompt=system_prompt,
+        tone=tone,
+        industry=industry,
+        chatbot_name=chatbot_name,
+        description=description
     )
     
     # Handle both old string response and new dict response

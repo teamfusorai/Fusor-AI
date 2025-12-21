@@ -1,13 +1,21 @@
 import getpass
 import os
 import uvicorn
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+import uuid
+import base64
+from typing import Optional
+from io import BytesIO
+from urllib.parse import quote
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
 from qdrant_client import QdrantClient
+import qrcode
 import json
 import config
 import data_ingestion
 import search_engine
+import chatbot_config
 
 app = FastAPI(
     title="Multi-Tenant Chatbot Platform API",
@@ -15,10 +23,10 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# Add CORS middleware for frontend integration
+# Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://localhost:5173", "http://127.0.0.1:3000", "http://127.0.0.1:5173"],
+    allow_origins=["*"],  # Allow all origins - adjust for production
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -183,11 +191,41 @@ async def websocket_chat(websocket: WebSocket, user_id: str, bot_id: str):
             
             # Process message using existing search engine
             try:
-                response = search_engine.search_and_answer(
+                # Use config from message if provided, otherwise try Bubble.io
+                has_config = any([
+                    message_data.get("system_prompt"),
+                    message_data.get("tone"),
+                    message_data.get("industry"),
+                    message_data.get("chatbot_name"),
+                    message_data.get("description")
+                ])
+                
+                if has_config:
+                    # Use message values directly
+                    system_prompt = message_data.get("system_prompt")
+                    tone = message_data.get("tone")
+                    industry = message_data.get("industry")
+                    chatbot_name = message_data.get("chatbot_name")
+                    description = message_data.get("description")
+                else:
+                    # Try Bubble.io (optional)
+                    chatbot_config_data = await chatbot_config.get_chatbot_config(user_id, bot_id)
+                    system_prompt = chatbot_config_data.get("system_prompt") if chatbot_config_data else None
+                    tone = chatbot_config_data.get("tone") if chatbot_config_data else None
+                    industry = chatbot_config_data.get("industry") if chatbot_config_data else None
+                    chatbot_name = chatbot_config_data.get("chatbot_name") if chatbot_config_data else None
+                    description = chatbot_config_data.get("description") if chatbot_config_data else None
+                
+                response = await search_engine.search_and_answer(
                     query=message_data["message"],
                     user_id=user_id,
                     bot_id=bot_id,
-                    top_k=message_data.get("top_k", 3)
+                    top_k=message_data.get("top_k", 3),
+                    system_prompt=system_prompt,
+                    tone=tone,
+                    industry=industry,
+                    chatbot_name=chatbot_name,
+                    description=description
                 )
                 
                 # Send response back to client
@@ -214,6 +252,140 @@ async def websocket_chat(websocket: WebSocket, user_id: str, bot_id: str):
         except:
             pass
 
+@app.get("/chatbot-config/{user_id}/{bot_id}")
+async def get_chatbot_config_endpoint(user_id: str, bot_id: str):
+    """Get chatbot configuration from Bubble.io or return default structure"""
+    config_data = await chatbot_config.get_chatbot_config(user_id, bot_id)
+    
+    if config_data:
+        return {
+            "chatbot_name": config_data.get("chatbot_name"),
+            "description": config_data.get("description"),
+            "industry": config_data.get("industry"),
+            "color": config_data.get("color"),
+            "logo": config_data.get("logo"),
+            "welcome_message": config_data.get("welcome_message"),
+            "knowledge_source": config_data.get("knowledge_source"),
+            "tone": config_data.get("tone"),
+            "system_prompt": config_data.get("system_prompt"),
+            "user_id": user_id,
+            "bot_id": bot_id
+        }
+    else:
+        # Return default structure if config not found
+        return {
+            "chatbot_name": None,
+            "description": None,
+            "industry": None,
+            "color": None,
+            "logo": None,
+            "welcome_message": None,
+            "knowledge_source": None,
+            "tone": None,
+            "system_prompt": None,
+            "user_id": user_id,
+            "bot_id": bot_id,
+            "message": "Chatbot configuration not found. Using default settings."
+        }
+
+@app.get("/generate-uuid")
+async def generate_uuid():
+    """Generate a new UUID"""
+    return {"uuid": str(uuid.uuid4())}
+
+@app.get("/generate-qr/{user_id}/{bot_id}")
+async def generate_qr_code(
+    user_id: str,
+    bot_id: str,
+    bubble_url: Optional[str] = Query(None, description="Base URL of Bubble.io app (optional, uses BUBBLE_APP_URL from config if not provided)"),
+    size: int = Query(300, description="QR code size in pixels", ge=100, le=1000)
+):
+    """
+    Generate a QR code image that links to the Bubble.io chatbot page.
+    Returns a PNG image that can be scanned to open the chatbot.
+    """
+    # Use provided bubble_url or fall back to config
+    base_url = bubble_url or config.BUBBLE_APP_URL
+    
+    # Construct the chatbot URL with user_id and bot_id parameters
+    chatbot_url = f"{base_url}/chatbot?user_id={user_id}&bot_id={bot_id}"
+    
+    # Generate QR code
+    qr = qrcode.QRCode(
+        version=1,
+        error_correction=qrcode.constants.ERROR_CORRECT_L,
+        box_size=10,
+        border=4,
+    )
+    qr.add_data(chatbot_url)
+    qr.make(fit=True)
+    
+    # Create image
+    img = qr.make_image(fill_color="black", back_color="white")
+    
+    # Resize if needed
+    if size != 300:
+        img = img.resize((size, size))
+    
+    # Convert to bytes
+    img_buffer = BytesIO()
+    img.save(img_buffer, format="PNG")
+    img_buffer.seek(0)
+    
+    # Return image as response
+    return Response(content=img_buffer.getvalue(), media_type="image/png")
+
+@app.get("/qr-code/{user_id}/{bot_id}")
+async def get_qr_code_info(
+    user_id: str,
+    bot_id: str,
+    bubble_url: Optional[str] = Query(None, description="Base URL of Bubble.io app (optional, uses BUBBLE_APP_URL from config if not provided)"),
+    include_base64: bool = Query(False, description="Include base64 encoded QR code image in response")
+):
+    """
+    Get QR code information including the chatbot URL and QR code image URL.
+    Returns JSON with QR code details that can be used for embedding or sharing.
+    """
+    # Use provided bubble_url or fall back to config
+    base_url = bubble_url or config.BUBBLE_APP_URL
+    
+    # Construct the chatbot URL with user_id and bot_id parameters
+    chatbot_url = f"{base_url}/chatbot?user_id={user_id}&bot_id={bot_id}"
+    
+    # Generate QR code URL (points to the image endpoint)
+    # URL encode the bubble_url parameter properly
+    encoded_bubble_url = quote(base_url, safe='')
+    qr_code_url = f"/generate-qr/{user_id}/{bot_id}?bubble_url={encoded_bubble_url}"
+    
+    response_data = {
+        "qr_code_url": qr_code_url,
+        "chatbot_url": chatbot_url,
+        "user_id": user_id,
+        "bot_id": bot_id
+    }
+    
+    # Optionally include base64 encoded image
+    if include_base64:
+        qr = qrcode.QRCode(
+            version=1,
+            error_correction=qrcode.constants.ERROR_CORRECT_L,
+            box_size=10,
+            border=4,
+        )
+        qr.add_data(chatbot_url)
+        qr.make(fit=True)
+        
+        img = qr.make_image(fill_color="black", back_color="white")
+        img_buffer = BytesIO()
+        img.save(img_buffer, format="PNG")
+        img_buffer.seek(0)
+        
+        # Encode to base64
+        img_base64 = base64.b64encode(img_buffer.getvalue()).decode("utf-8")
+        response_data["qr_code_base64"] = f"data:image/png;base64,{img_base64}"
+    
+    return response_data
+
 @app.get("/")
 async def root():
     """Root endpoint with API information"""
@@ -223,7 +395,11 @@ async def root():
         "endpoints": {
             "ingest": "/ingest",
             "query": "/query", 
-            "knowledge-bases": "/knowledge-bases"
+            "knowledge-bases": "/knowledge-bases",
+            "chatbot-config": "/chatbot-config/{user_id}/{bot_id}",
+            "generate-uuid": "/generate-uuid",
+            "generate-qr": "/generate-qr/{user_id}/{bot_id}",
+            "qr-code": "/qr-code/{user_id}/{bot_id}"
         }
     }
 

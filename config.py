@@ -61,3 +61,8 @@ TIMEOUT_SECONDS = 30
 ENABLE_QUERY_PREPROCESSING = True
 QUERY_EXPANSION = True  # Expand acronyms, fix common typos
 NORMALIZE_QUERY = True  # Lowercase, remove extra spaces
+
+# ================================
+# Deployment Configuration
+# ================================
+BUBBLE_APP_URL = os.getenv("BUBBLE_APP_URL", "https://fyp-fusor-ai.bubbleapps.io/version-test/qr")  # Base URL for Bubble.io app
