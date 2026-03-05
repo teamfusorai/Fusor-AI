@@ -9,12 +9,16 @@ from qdrant_client import QdrantClient
 from qdrant_client.models import Filter, FieldCondition, MatchValue
 import config
 import chatbot_config
+from utils.logging_config import get_logger
+from utils.metrics import increment
+from utils.conversation_memory import get_history, add_turn
 
 # -------------------------
 # Setup
 # -------------------------
 load_dotenv()
 router = APIRouter()
+logger = get_logger(__name__)
 
 app = FastAPI()
 
@@ -104,15 +108,16 @@ def preprocess_query(query: str) -> str:
 # Core Search + Answer
 # -------------------------
 async def search_and_answer(
-    query: str, 
-    top_k: int = 3, 
-    user_id: str = "default_user", 
+    query: str,
+    top_k: int = 3,
+    user_id: str = "default_user",
     bot_id: str = "default_bot",
     system_prompt: Optional[str] = None,
     tone: Optional[str] = None,
     industry: Optional[str] = None,
     chatbot_name: Optional[str] = None,
-    description: Optional[str] = None
+    description: Optional[str] = None,
+    chat_history: Optional[list] = None,
 ):
     # 1. Preprocess query
     processed_query = preprocess_query(query)
@@ -124,11 +129,12 @@ async def search_and_answer(
     collection_name = f"{config.COLLECTION_PREFIX}{user_id}"
     namespace = f"{config.NAMESPACE_PREFIX}{bot_id}"
     
-    # 4. Search in Qdrant (no score threshold here, we'll filter later)
+    # 4. Search in Qdrant (retrieve at least top_k, up to DEFAULT_TOP_K for filtering)
+    search_limit = max(config.DEFAULT_TOP_K, min(top_k, config.MAX_TOP_K))
     search_result = qdrant_client.search(
         collection_name=collection_name,
         query_vector=query_embedding,
-        limit=config.DEFAULT_TOP_K,  # Retrieve more initially
+        limit=search_limit,
         query_filter=Filter(
             must=[FieldCondition(key="metadata.namespace", match=MatchValue(value=namespace))]
         ) if namespace else None
@@ -182,11 +188,13 @@ async def search_and_answer(
         tone=tone,
         custom_system_prompt=system_prompt
     )
-    
-    messages = [
-        {"role": "system", "content": final_system_prompt},
-        {"role": "user", "content": f"{context}\n\nQuestion: {query}"}
-    ]
+
+    # Short-term memory: optional chunked conversation history (last N turns)
+    current_user_message = f"{context}\n\nQuestion: {query}"
+    messages = [{"role": "system", "content": final_system_prompt}]
+    if chat_history:
+        messages.extend(chat_history)
+    messages.append({"role": "user", "content": current_user_message})
 
     response = await CHAT_MODEL.ainvoke(messages)
     
@@ -204,6 +212,7 @@ async def search_and_answer(
 # -------------------------
 @router.post("/query")
 async def query_endpoint(request: QueryRequest):
+    increment("query_requests_total")
     # Use config from request if provided, otherwise try to fetch from Bubble.io
     # If any config field is provided, use request values and skip Bubble.io fetch
     has_config = any([
@@ -238,7 +247,8 @@ async def query_endpoint(request: QueryRequest):
             industry = None
             chatbot_name = None
             description = None
-    
+
+    chat_history = get_history(request.user_id, request.bot_id)
     result = await search_and_answer(
         query=request.query,
         top_k=request.top_k,
@@ -248,9 +258,13 @@ async def query_endpoint(request: QueryRequest):
         tone=tone,
         industry=industry,
         chatbot_name=chatbot_name,
-        description=description
+        description=description,
+        chat_history=chat_history,
     )
-    
+
+    if isinstance(result, dict):
+        add_turn(request.user_id, request.bot_id, request.query, result["answer"])
+
     # Handle both old string response and new dict response
     if isinstance(result, dict):
         return {

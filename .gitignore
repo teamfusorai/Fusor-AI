@@ -223,6 +223,7 @@ datasets/
 uploads/
 documents/
 files/
+.ingest_uploads/
 
 # Backup files
 *.bak

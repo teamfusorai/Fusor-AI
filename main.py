@@ -1,4 +1,3 @@
-import getpass
 import os
 import uvicorn
 import uuid
@@ -6,19 +5,26 @@ import base64
 from typing import Optional
 from io import BytesIO
 from urllib.parse import quote
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response
+from fastapi.responses import Response, JSONResponse, HTMLResponse
+from fastapi.staticfiles import StaticFiles
 from qdrant_client import QdrantClient
+from qdrant_client.models import Filter, FieldCondition, MatchValue
 import qrcode
 import json
 import config
 import data_ingestion
 import search_engine
 import chatbot_config
+from utils.logging_config import get_logger
+from utils.metrics import get_metrics
+from utils.conversation_memory import get_history, add_turn, clear_history as clear_conversation_history
+
+logger = get_logger(__name__)
 
 app = FastAPI(
-    title="Multi-Tenant Chatbot Platform API",
+    title="Fusor AI API",
     description="API for document ingestion and chatbot querying",
     version="1.0.0"
 )
@@ -35,8 +41,42 @@ app.add_middleware(
 app.include_router(data_ingestion.router)
 app.include_router(search_engine.router)
 
+# Serve embeddable widget script at /static/widget.js
+_static_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
+if os.path.isdir(_static_dir):
+    app.mount("/static", StaticFiles(directory=_static_dir), name="static")
+
 # Initialize Qdrant client for knowledge base listing
 qdrant_client = QdrantClient(host=config.QDRANT_HOST, port=config.QDRANT_PORT)
+
+
+def _error_response(message: str, code: str = "error", status_code: int = 400) -> JSONResponse:
+    """Standard error response: { \"error\": { \"code\": ..., \"message\": ... } }."""
+    return JSONResponse(
+        status_code=status_code,
+        content={"error": {"code": code, "message": message}},
+    )
+
+
+@app.get("/health")
+async def health():
+    """Liveness: is the process up."""
+    return {"status": "ok"}
+
+
+@app.get("/ready")
+async def ready():
+    """Readiness: can the app serve traffic (e.g. Qdrant reachable)."""
+    try:
+        qdrant_client.get_collections()
+        return {"status": "ready"}
+    except Exception as e:
+        logger.warning("Ready check failed: Qdrant unreachable", extra={"error": str(e)})
+        return JSONResponse(
+            status_code=503,
+            content={"error": {"code": "service_unavailable", "message": "Qdrant unavailable"}},
+        )
+
 
 @app.get("/knowledge-bases")
 async def list_knowledge_bases():
@@ -86,13 +126,12 @@ async def list_knowledge_bases():
                             })
                 
                 except Exception as e:
-                    print(f"Error processing collection {collection_name}: {e}")
+                    logger.warning("Error processing collection", extra={"collection": collection_name, "error": str(e)})
                     continue
-        
         return knowledge_bases
-        
     except Exception as e:
-        return {"error": f"Failed to list knowledge bases: {str(e)}"}
+        logger.exception("Failed to list knowledge bases")
+        return _error_response(f"Failed to list knowledge bases: {str(e)}", "list_failed", 500)
 
 @app.get("/knowledge-bases/{user_id}/{bot_id}/stats")
 async def get_knowledge_base_stats(user_id: str, bot_id: str):
@@ -102,27 +141,25 @@ async def get_knowledge_base_stats(user_id: str, bot_id: str):
         namespace = f"{config.NAMESPACE_PREFIX}{bot_id}"
         
         if not qdrant_client.collection_exists(collection_name):
-            return {"error": "Knowledge base not found"}
-        
-        # Get collection info
+            return _error_response("Knowledge base not found", "not_found", 404)
         collection_info = qdrant_client.get_collection(collection_name)
-        
-        # Count points in specific namespace
-        namespace_points = qdrant_client.scroll(
-            collection_name=collection_name,
-            scroll_filter={
-                "must": [
-                    {
-                        "key": "metadata.namespace",
-                        "match": {"value": namespace}
-                    }
-                ]
-            },
-            limit=10000,  # Large limit to count all
-            with_payload=False
-        )[0]
-        
-        chunks_count = len(namespace_points)
+        namespace_filter = Filter(
+            must=[FieldCondition(key="metadata.namespace", match=MatchValue(value=namespace))]
+        )
+        chunks_count = 0
+        offset = None
+        while True:
+            points, next_offset = qdrant_client.scroll(
+                collection_name=collection_name,
+                scroll_filter=namespace_filter,
+                limit=1000,
+                offset=offset,
+                with_payload=False,
+            )
+            chunks_count += len(points)
+            if next_offset is None:
+                break
+            offset = next_offset
         
         return {
             "chunks_count": chunks_count,
@@ -132,45 +169,29 @@ async def get_knowledge_base_stats(user_id: str, bot_id: str):
         }
         
     except Exception as e:
-        return {"error": f"Failed to get knowledge base stats: {str(e)}"}
+        logger.exception("Failed to get knowledge base stats")
+        return _error_response(f"Failed to get knowledge base stats: {str(e)}", "stats_failed", 500)
+
 
 @app.delete("/knowledge-bases/{user_id}/{bot_id}")
 async def delete_knowledge_base(user_id: str, bot_id: str):
-    """Delete a specific knowledge base (bot namespace)"""
+    """Delete a specific knowledge base (bot namespace). Uses filter delete so no scroll limit."""
     try:
         collection_name = f"{config.COLLECTION_PREFIX}{user_id}"
         namespace = f"{config.NAMESPACE_PREFIX}{bot_id}"
-        
         if not qdrant_client.collection_exists(collection_name):
-            return {"error": "Knowledge base not found"}
-        
-        # Get all points in the namespace
-        points = qdrant_client.scroll(
+            return _error_response("Knowledge base not found", "not_found", 404)
+        qdrant_client.delete(
             collection_name=collection_name,
-            scroll_filter={
-                "must": [
-                    {
-                        "key": "metadata.namespace",
-                        "match": {"value": namespace}
-                    }
-                ]
-            },
-            limit=10000,
-            with_payload=False
-        )[0]
-        
-        if points:
-            # Delete all points in the namespace
-            point_ids = [point.id for point in points]
-            qdrant_client.delete(
-                collection_name=collection_name,
-                points_selector=point_ids
-            )
-        
+            points_selector=Filter(
+                must=[FieldCondition(key="metadata.namespace", match=MatchValue(value=namespace))]
+            ),
+        )
+        logger.info("Deleted knowledge base", extra={"user_id": user_id, "bot_id": bot_id})
         return {"status": "success", "message": f"Deleted knowledge base {user_id}/{bot_id}"}
-        
     except Exception as e:
-        return {"error": f"Failed to delete knowledge base: {str(e)}"}
+        logger.exception("Failed to delete knowledge base")
+        return _error_response(f"Failed to delete knowledge base: {str(e)}", "delete_failed", 500)
 
 @app.websocket("/ws/chat/{user_id}/{bot_id}")
 async def websocket_chat(websocket: WebSocket, user_id: str, bot_id: str):
@@ -216,6 +237,7 @@ async def websocket_chat(websocket: WebSocket, user_id: str, bot_id: str):
                     chatbot_name = chatbot_config_data.get("chatbot_name") if chatbot_config_data else None
                     description = chatbot_config_data.get("description") if chatbot_config_data else None
                 
+                chat_history = get_history(user_id, bot_id)
                 response = await search_engine.search_and_answer(
                     query=message_data["message"],
                     user_id=user_id,
@@ -225,10 +247,11 @@ async def websocket_chat(websocket: WebSocket, user_id: str, bot_id: str):
                     tone=tone,
                     industry=industry,
                     chatbot_name=chatbot_name,
-                    description=description
+                    description=description,
+                    chat_history=chat_history,
                 )
-                
-                # Send response back to client
+                if isinstance(response, dict):
+                    add_turn(user_id, bot_id, message_data["message"], response["answer"])
                 await websocket.send_text(json.dumps({
                     "answer": response["answer"],
                     "citations": response["citations"],
@@ -251,6 +274,13 @@ async def websocket_chat(websocket: WebSocket, user_id: str, bot_id: str):
             }))
         except:
             pass
+
+@app.post("/chat/clear-history/{user_id}/{bot_id}")
+async def clear_chat_history(user_id: str, bot_id: str):
+    """Clear short-term conversation memory for this user/bot."""
+    clear_conversation_history(user_id, bot_id)
+    return {"status": "ok", "message": "Conversation history cleared"}
+
 
 @app.get("/chatbot-config/{user_id}/{bot_id}")
 async def get_chatbot_config_endpoint(user_id: str, bot_id: str):
@@ -386,6 +416,108 @@ async def get_qr_code_info(
     
     return response_data
 
+
+# -------------------------
+# Embeddable widget & domain
+# -------------------------
+
+@app.get("/embed/config")
+async def embed_config(request: Request):
+    """
+    Return the public API base URL (domain) and widget info for embedding.
+    Used by Bubble or other clients to get the correct domain for the embed snippet.
+    """
+    base = (config.API_PUBLIC_URL or str(request.base_url).rstrip("/"))
+    return {
+        "api_public_url": base,
+        "widget_script_url": f"{base}/static/widget.js",
+        "placement_options": ["bottom-corner", "floating", "inline"],
+        "snippet_docs": "Add script with data-api-url, data-user-id, data-bot-id, data-placement (optional), data-target (for inline).",
+    }
+
+
+@app.get("/embed/snippet")
+async def embed_snippet(
+    request: Request,
+    user_id: str = Query(..., description="Creator user ID"),
+    bot_id: str = Query(..., description="Chatbot bot ID"),
+    placement: str = Query("bottom-corner", description="Widget placement: bottom-corner, floating, or inline"),
+    api_url: Optional[str] = Query(None, description="Override API base URL (default: API_PUBLIC_URL or request base)"),
+):
+    """
+    Return the HTML snippet and domain to embed this chatbot as a website widget.
+    """
+    base = (api_url or config.API_PUBLIC_URL or str(request.base_url).rstrip("/")).rstrip("/")
+    script_src = f"{base}/static/widget.js"
+    placement = placement if placement in ("bottom-corner", "floating", "inline") else "bottom-corner"
+    attrs = [
+        f'src="{script_src}"',
+        f'data-api-url="{base}"',
+        f'data-user-id="{user_id}"',
+        f'data-bot-id="{bot_id}"',
+        f'data-placement="{placement}"',
+    ]
+    snippet = "<script " + " ".join(attrs) + "></script>"
+    return {
+        "snippet": snippet,
+        "api_base_url": base,
+        "user_id": user_id,
+        "bot_id": bot_id,
+        "placement": placement,
+    }
+
+
+@app.get("/embed", response_class=HTMLResponse)
+async def embed_iframe(
+    request: Request,
+    user_id: str = Query(..., description="Creator user ID"),
+    bot_id: str = Query(..., description="Chatbot bot ID"),
+    placement: str = Query("bottom-corner", description="Widget placement: bottom-corner, floating, or inline"),
+):
+    """
+    Minimal HTML page that loads the widget script with query params.
+    Use as iframe src for iframe-based embed: <iframe src="https://api/embed?user_id=...&bot_id=..."></iframe>
+    """
+    base = (config.API_PUBLIC_URL or str(request.base_url).rstrip("/")).rstrip("/")
+    placement = placement if placement in ("bottom-corner", "floating", "inline") else "bottom-corner"
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Chat</title>
+  <style>body{{margin:0;min-height:100vh;}}#fusor-embed-root{{min-height:400px;}}</style>
+</head>
+<body>
+  <div id="fusor-embed-root"></div>
+  <script>
+(function(){{
+  var params = new URLSearchParams(window.location.search);
+  var uid = params.get('user_id') || '';
+  var bid = params.get('bot_id') || '';
+  var pl = params.get('placement') || 'bottom-corner';
+  var apiUrl = '{base}';
+  var script = document.createElement('script');
+  script.src = apiUrl + '/static/widget.js';
+  script.setAttribute('data-api-url', apiUrl);
+  script.setAttribute('data-user-id', uid);
+  script.setAttribute('data-bot-id', bid);
+  script.setAttribute('data-placement', pl);
+  if (pl === 'inline') script.setAttribute('data-target', '#fusor-embed-root');
+  document.body.appendChild(script);
+}})();
+  </script>
+</body>
+</html>"""
+    return HTMLResponse(html)
+
+
+@app.get("/metrics")
+async def metrics():
+    """Basic request metrics (single-process in-memory)."""
+    return get_metrics()
+
+
 @app.get("/")
 async def root():
     """Root endpoint with API information"""
@@ -393,14 +525,22 @@ async def root():
         "message": "Multi-Tenant Chatbot Platform API",
         "version": "1.0.0",
         "endpoints": {
+            "health": "/health",
+            "ready": "/ready",
             "ingest": "/ingest",
-            "query": "/query", 
+            "ingest-status": "/ingest/status/{job_id}",
+            "query": "/query",
+            "chat-clear-history": "/chat/clear-history/{user_id}/{bot_id}",
             "knowledge-bases": "/knowledge-bases",
             "chatbot-config": "/chatbot-config/{user_id}/{bot_id}",
             "generate-uuid": "/generate-uuid",
             "generate-qr": "/generate-qr/{user_id}/{bot_id}",
-            "qr-code": "/qr-code/{user_id}/{bot_id}"
-        }
+            "qr-code": "/qr-code/{user_id}/{bot_id}",
+            "embed-config": "/embed/config",
+            "embed-snippet": "/embed/snippet",
+            "embed-iframe": "/embed",
+            "metrics": "/metrics",
+        },
     }
 
 if __name__ == "__main__":

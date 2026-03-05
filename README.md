@@ -47,6 +47,8 @@ Create a `.env` file in the project root:
 OPENAI_API_KEY=your_openai_api_key_here
 QDRANT_HOST=localhost
 QDRANT_PORT=6333
+# Optional: public base URL for embed widget (e.g. https://api.yourdomain.com or ngrok URL). Used in embed snippet.
+# API_PUBLIC_URL=https://your-api-domain.com
 ```
 
 **Get your OpenAI API key:**
@@ -107,6 +109,33 @@ curl -X POST http://localhost:8000/query \
     "bot_id": "support_bot"
   }'
 ```
+
+### Embedding the chatbot (website widget)
+
+Add the bot as a chat widget on any website by pasting the embed snippet.
+
+**Get the snippet and domain:**
+
+- **Domain / config:** `GET /embed/config` returns the public API base URL and widget script URL. Use this in your dashboard (e.g. Bubble) to show the correct domain and build the snippet.
+- **Ready-made snippet:** `GET /embed/snippet?user_id=john_doe&bot_id=support_bot&placement=bottom-corner` returns `snippet` (HTML) and `api_base_url`.
+
+**Example snippet** (replace `YOUR_API_BASE_URL`, `USER_ID`, and `BOT_ID`):
+
+```html
+<script src="https://YOUR_API_BASE_URL/static/widget.js"
+        data-api-url="https://YOUR_API_BASE_URL"
+        data-user-id="USER_ID"
+        data-bot-id="BOT_ID"
+        data-placement="bottom-corner"></script>
+```
+
+**Data attributes:** `data-api-url` (backend base URL), `data-user-id`, `data-bot-id`, `data-placement` (optional; `bottom-corner`, `floating`, or `inline`), `data-target` (optional; CSS selector for inline placement, e.g. `#your-container`).
+
+**Placement:** `bottom-corner` (default), `floating`, or `inline`. For inline, add `data-target="#your-container"` and put the script above the target element.
+
+**Domain:** Set `API_PUBLIC_URL` in `.env` to your public API URL (e.g. `https://api.yourdomain.com` or your ngrok URL with no trailing slash) so the snippet works from end-users’ browsers. If you omit it, the widget uses the script’s origin.
+
+**Iframe option:** You can also embed via iframe: `GET /embed?user_id=...&bot_id=...&placement=...` returns a minimal HTML page that loads the widget. Use `<iframe src="https://YOUR_API_BASE_URL/embed?user_id=USER_ID&bot_id=BOT_ID"></iframe>`.
 
 ## 🎯 Example Usage
 
