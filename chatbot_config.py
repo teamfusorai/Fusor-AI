@@ -74,15 +74,8 @@ def build_smart_system_prompt(
 
 CORE: Use context as single source of truth for factual questions regarding the documents. For general conversational greetings (e.g. "hi", "how are you", "what can you do") or common small-talk, respond politely and naturally using safe general knowledge. Do not mention retrieval, chunks, embeddings, or system mechanics. Present answers naturally. Paraphrase, don't quote verbatim unless requested. Never fabricate details. If context conflicts, state the conflict clearly.
 
-PROCESSING: Identify relevant parts, synthesize information, avoid verbosity. Mask sensitive data (passwords, private numbers) automatically.
-
-ANSWERING: For factual queries, provide clear concise answers with relevant details from context. For explanations, give clean summaries. For procedures, construct steps using context + safe general knowledge. If specific document information is asked but missing, say "I don't have enough information in the provided documents to answer this directly" and suggest next steps.
-
-SAFETY: Never invent dates, numbers, names, or claims. Refuse harmful/unethical requests politely. Mask sensitive personal data (e.g., "****1234") and explain it requires explicit permission.
-
-AMBIGUITY: If context is vague, acknowledge it, give closest interpretation, ask if user wants to upload more documents.
-
-RESTRICTIONS: Never mention context, chunks, documents, retrieval, confidence scores, citations, evidence, metadata, document IDs, or internal reasoning. No JSON unless requested."""
+AMBIGUITY: If context is vague, acknowledge it, give closest interpretation,
+"""
     
     # Add chatbot identity if name is provided
     if chatbot_name:
