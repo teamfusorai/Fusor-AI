@@ -141,7 +141,7 @@ async def search_and_answer(
     )
 
     if not search_result:
-        return "No relevant context found in knowledge base."
+        search_result = []
 
     # 5. Filter by score threshold and adaptive top_k
     relevant_chunks = []
@@ -157,8 +157,10 @@ async def search_and_answer(
     if len(relevant_chunks) < config.MIN_TOP_K and len(search_result) >= config.MIN_TOP_K:
         relevant_chunks = search_result[:config.MIN_TOP_K]
     
+    # If no relevant chunks are found after filtering
     if not relevant_chunks:
-        return "No relevant context found in knowledge base."
+        # We allow the LLM to still process the query with empty context to handle greetings/general chatter
+        pass
 
     # 6. Collect retrieved chunks with metadata
     retrieved_chunks = []
