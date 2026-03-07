@@ -1,0 +1,223 @@
+.modal-overlay {
+    position: fixed;
+    inset: 0;
+    background-color: rgba(0, 0, 0, 0.4);
+    backdrop-filter: blur(4px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 9999;
+    opacity: 0;
+    transition: opacity 0.2s ease;
+    padding: 24px;
+    overflow-y: auto;
+}
+
+.modal-overlay.open {
+    opacity: 1;
+}
+
+.modal-content {
+    background-color: var(--color-white);
+    border: 1px solid var(--color-gray-border);
+    border-radius: 16px;
+    padding: 0;
+    width: 100%;
+    max-width: 480px;
+    position: relative;
+    box-shadow: 0px 10px 15px 0px rgba(0, 0, 0, 0.1);
+    transform: translateY(10px) scale(0.98);
+    transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+    display: flex;
+    flex-direction: column;
+    margin: auto;
+    /* Fallback for when modal is taller than viewport under standard flex alignment */
+}
+
+.modal-content.open {
+    transform: translateY(0) scale(1);
+}
+
+.modal-close {
+    position: absolute;
+    top: 16px;
+    right: 16px;
+    background: transparent;
+    border: none;
+    color: var(--color-black);
+    opacity: 0.5;
+    cursor: pointer;
+    padding: 8px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background-color 0.2s, opacity 0.2s;
+}
+
+.modal-close:hover {
+    background-color: var(--color-gray-bg);
+    opacity: 1;
+}
+
+.modal-scroll-area {
+    padding: 32px;
+}
+
+.modal-header {
+    margin-bottom: 32px;
+}
+
+.modal-title {
+    font-size: 24px;
+    font-weight: 600;
+    color: var(--color-black);
+    margin-bottom: 6px;
+    letter-spacing: -0.24px;
+}
+
+.modal-subtitle {
+    font-size: 14px;
+    color: var(--color-gray-dark);
+}
+
+.modal-form {
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+}
+
+.form-group {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.form-group-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.form-group label {
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--color-black);
+}
+
+.form-input {
+    background-color: rgba(229, 229, 229, 0.3);
+    border: 1px solid var(--color-gray-border);
+    border-radius: 12px;
+    padding: 0 16px;
+    height: 48px;
+    font-size: 14px;
+    font-family: var(--font-main);
+    color: var(--color-black);
+    outline: none;
+    transition: border-color 0.2s, background-color 0.2s;
+}
+
+.form-input::placeholder {
+    color: #737373;
+}
+
+.form-input:focus {
+    border-color: var(--color-black);
+    background-color: var(--color-white);
+}
+
+.forgot-password {
+    font-size: 14px;
+    color: var(--color-gray-dark);
+    text-decoration: none;
+}
+
+.forgot-password:hover {
+    text-decoration: underline;
+    color: var(--color-black);
+}
+
+.form-submit {
+    width: 100%;
+    height: 48px;
+    margin-top: 4px;
+    border-radius: 14px;
+}
+
+.modal-divider {
+    position: relative;
+    text-align: center;
+    margin: 24px 0;
+}
+
+.modal-divider::before {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 0;
+    right: 0;
+    height: 1px;
+    background-color: var(--color-gray-border);
+    z-index: 1;
+}
+
+.modal-divider span {
+    position: relative;
+    background-color: var(--color-white);
+    padding: 0 16px;
+    font-size: 14px;
+    color: var(--color-gray-dark);
+    z-index: 2;
+}
+
+.social-login {
+    display: flex;
+    gap: 12px;
+}
+
+.btn-social {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    height: 48px;
+    background-color: rgba(229, 229, 229, 0.3);
+    border: 1px solid var(--color-gray-border);
+    border-radius: 12px;
+    font-size: 14px;
+    font-weight: 500;
+    color: #0a0a0a;
+    cursor: pointer;
+    transition: background-color 0.2s;
+}
+
+.btn-social:hover {
+    background-color: rgba(229, 229, 229, 0.6);
+}
+
+.modal-footer {
+    text-align: center;
+    margin-top: 32px;
+}
+
+.modal-footer p {
+    font-size: 14px;
+    color: var(--color-gray-dark);
+}
+
+.btn-link {
+    background: none;
+    border: none;
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--color-black);
+    cursor: pointer;
+    margin-left: 6px;
+    padding: 0;
+}
+
+.btn-link:hover {
+    text-decoration: underline;
+}
