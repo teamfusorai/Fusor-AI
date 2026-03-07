@@ -65,6 +65,7 @@ class QueryRequest(BaseModel):
     industry: Optional[str] = None
     chatbot_name: Optional[str] = None
     description: Optional[str] = None
+    temperature: Optional[float] = None
 
 
 # -------------------------
@@ -117,6 +118,7 @@ async def search_and_answer(
     industry: Optional[str] = None,
     chatbot_name: Optional[str] = None,
     description: Optional[str] = None,
+    temperature: Optional[float] = None,
     chat_history: Optional[list] = None,
 ):
     # 1. Preprocess query
@@ -198,7 +200,21 @@ async def search_and_answer(
         messages.extend(chat_history)
     messages.append({"role": "user", "content": current_user_message})
 
-    response = await CHAT_MODEL.ainvoke(messages)
+    # Apply temperature dynamically if provided
+    current_model = CHAT_MODEL
+    if temperature is not None:
+        try:
+            current_model = ChatOpenAI(
+                model=config.CHAT_MODEL_NAME,
+                api_key=os.getenv("OPENAI_API_KEY"),
+                timeout=config.TIMEOUT_SECONDS,
+                max_retries=config.MAX_RETRIES,
+                temperature=temperature
+            )
+        except Exception as e:
+            logger.warning("Failed to initialize dynamic temperature model, falling back to default.", extra={"error": str(e)})
+
+    response = await current_model.ainvoke(messages)
     
     # 10. Return response with metadata
     return {
@@ -222,7 +238,8 @@ async def query_endpoint(request: QueryRequest):
         request.tone,
         request.industry,
         request.chatbot_name,
-        request.description
+        request.description,
+        request.temperature,
     ])
     
     if has_config:
@@ -232,6 +249,7 @@ async def query_endpoint(request: QueryRequest):
         industry = request.industry
         chatbot_name = request.chatbot_name
         description = request.description
+        temperature = request.temperature
     else:
         # Try to fetch from Bubble.io (optional, will work if API is available)
         chatbot_config_data = await chatbot_config.get_chatbot_config(request.user_id, request.bot_id)
@@ -242,6 +260,7 @@ async def query_endpoint(request: QueryRequest):
             industry = chatbot_config_data.get("industry")
             chatbot_name = chatbot_config_data.get("chatbot_name")
             description = chatbot_config_data.get("description")
+            temperature = chatbot_config_data.get("temperature")
         else:
             # No config available, use None (will use default prompts)
             system_prompt = None
@@ -249,6 +268,7 @@ async def query_endpoint(request: QueryRequest):
             industry = None
             chatbot_name = None
             description = None
+            temperature = None
 
     chat_history = get_history(request.user_id, request.bot_id)
     result = await search_and_answer(
@@ -261,6 +281,7 @@ async def query_endpoint(request: QueryRequest):
         industry=industry,
         chatbot_name=chatbot_name,
         description=description,
+        temperature=temperature,
         chat_history=chat_history,
     )
 

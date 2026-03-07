@@ -5,7 +5,7 @@ import base64
 from typing import Optional
 from io import BytesIO
 from urllib.parse import quote
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query, Request
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query, Request, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, JSONResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -17,6 +17,8 @@ import config
 import data_ingestion
 import search_engine
 import chatbot_config
+import database
+from pydantic import BaseModel
 from utils.logging_config import get_logger
 from utils.metrics import get_metrics
 from utils.conversation_memory import get_history, add_turn, clear_history as clear_conversation_history
@@ -41,13 +43,38 @@ app.add_middleware(
 app.include_router(data_ingestion.router)
 app.include_router(search_engine.router)
 
-# Serve embeddable widget script at /static/widget.js
+from fastapi.responses import Response, JSONResponse, HTMLResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
+from qdrant_client import QdrantClient
+
+# ...
+
 _static_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
+
+# Explicitly intercept widget.js to ensure it is NEVER cached by the browser
+@app.get("/static/widget.js")
+async def serve_widget_js():
+    file_path = os.path.join(_static_dir, "widget.js")
+    if os.path.exists(file_path):
+        return FileResponse(
+            file_path, 
+            media_type="application/javascript",
+            headers={
+                "Cache-Control": "no-cache, no-store, must-revalidate",
+                "Pragma": "no-cache",
+                "Expires": "0"
+            }
+        )
+    return _error_response("Widget script not found", status_code=404)
+
 if os.path.isdir(_static_dir):
     app.mount("/static", StaticFiles(directory=_static_dir), name="static")
 
 # Initialize Qdrant client for knowledge base listing
 qdrant_client = QdrantClient(host=config.QDRANT_HOST, port=config.QDRANT_PORT)
+
+# Initialize local SQLite DB for chatbot configs
+database.init_db()
 
 
 def _error_response(message: str, code: str = "error", status_code: int = 400) -> JSONResponse:
@@ -295,9 +322,9 @@ async def get_chatbot_config_endpoint(user_id: str, bot_id: str):
             "color": config_data.get("color"),
             "logo": config_data.get("logo"),
             "welcome_message": config_data.get("welcome_message"),
-            "knowledge_source": config_data.get("knowledge_source"),
             "tone": config_data.get("tone"),
             "system_prompt": config_data.get("system_prompt"),
+            "temperature": config_data.get("temperature"),
             "user_id": user_id,
             "bot_id": bot_id
         }
@@ -310,13 +337,71 @@ async def get_chatbot_config_endpoint(user_id: str, bot_id: str):
             "color": None,
             "logo": None,
             "welcome_message": None,
-            "knowledge_source": None,
             "tone": None,
             "system_prompt": None,
+            "temperature": None,
             "user_id": user_id,
             "bot_id": bot_id,
             "message": "Chatbot configuration not found. Using default settings."
         }
+
+class ChatbotConfigRequest(BaseModel):
+    chatbot_name: Optional[str] = None
+    description: Optional[str] = None
+    industry: Optional[str] = None
+    color: Optional[str] = None
+    logo: Optional[str] = None
+    welcome_message: Optional[str] = None
+    tone: Optional[str] = None
+    system_prompt: Optional[str] = None
+    temperature: Optional[float] = None
+
+@app.post("/chatbot-config/{user_id}/{bot_id}")
+async def save_chatbot_config_endpoint(
+    user_id: str, 
+    bot_id: str, 
+    chatbot_name: Optional[str] = Form(None),
+    description: Optional[str] = Form(None),
+    industry: Optional[str] = Form(None),
+    color: Optional[str] = Form(None),
+    logo: Optional[str] = Form(None),
+    welcome_message: Optional[str] = Form(None),
+    tone: Optional[str] = Form(None),
+    system_prompt: Optional[str] = Form(None),
+    temperature: Optional[str] = Form(None)
+):
+    """Save chatbot configuration to the local SQLite database using Form data."""
+    
+    parsed_temp = None
+    if temperature is not None and str(temperature).strip():
+        try:
+            parsed_temp = float(temperature)
+        except ValueError:
+            pass
+            
+    config_dict = {
+        "chatbot_name": chatbot_name,
+        "description": description,
+        "industry": industry,
+        "color": color,
+        "logo": logo,
+        "welcome_message": welcome_message,
+        "tone": tone,
+        "system_prompt": system_prompt,
+        "temperature": parsed_temp
+    }
+    success = database.save_chatbot_config(user_id, bot_id, config_dict)
+    if success:
+        return {"status": "success", "message": "Configuration saved successfully"}
+    return _error_response("Failed to save configuration", status_code=500)
+
+@app.delete("/chatbot-config/{user_id}/{bot_id}")
+async def delete_chatbot_config_endpoint(user_id: str, bot_id: str):
+    """Delete chatbot configuration from the local SQLite database."""
+    success = database.delete_chatbot_config(user_id, bot_id)
+    if success:
+        return {"status": "success", "message": "Configuration deleted successfully"}
+    return _error_response("Failed to delete configuration", status_code=500)
 
 @app.get("/generate-uuid")
 async def generate_uuid():
@@ -448,7 +533,7 @@ async def embed_snippet(
     Return the HTML snippet and domain to embed this chatbot as a website widget.
     """
     base = (api_url or config.API_PUBLIC_URL or str(request.base_url).rstrip("/")).rstrip("/")
-    script_src = f"{base}/static/widget.js"
+    script_src = f"{base}/static/widget.js?v=2"
     placement = placement if placement in ("bottom-corner", "floating", "inline") else "bottom-corner"
     attrs = [
         f'src="{script_src}"',
@@ -498,7 +583,7 @@ async def embed_iframe(
   var pl = params.get('placement') || 'bottom-corner';
   var apiUrl = '{base}';
   var script = document.createElement('script');
-  script.src = apiUrl + '/static/widget.js';
+  script.src = apiUrl + '/static/widget.js?v=' + Date.now();
   script.setAttribute('data-api-url', apiUrl);
   script.setAttribute('data-user-id', uid);
   script.setAttribute('data-bot-id', bid);
@@ -532,7 +617,9 @@ async def root():
             "query": "/query",
             "chat-clear-history": "/chat/clear-history/{user_id}/{bot_id}",
             "knowledge-bases": "/knowledge-bases",
-            "chatbot-config": "/chatbot-config/{user_id}/{bot_id}",
+            "chatbot-config-get": "GET /chatbot-config/{user_id}/{bot_id}",
+            "chatbot-config-post": "POST /chatbot-config/{user_id}/{bot_id}",
+            "chatbot-config-delete": "DELETE /chatbot-config/{user_id}/{bot_id}",
             "generate-uuid": "/generate-uuid",
             "generate-qr": "/generate-qr/{user_id}/{bot_id}",
             "qr-code": "/qr-code/{user_id}/{bot_id}",

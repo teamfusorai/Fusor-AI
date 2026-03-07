@@ -18,7 +18,7 @@
         a.href = src;
         apiUrl = a.origin;
       }
-    } catch (e) {}
+    } catch (e) { }
   }
   if (!apiUrl) return;
 
@@ -53,13 +53,13 @@
       "." + PREFIX + "header span{ font-weight: 600; font-size: 15px; }",
       "." + PREFIX + "messages{ flex: 1; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 10px; background: #f8fafc; }",
       "." + PREFIX + "msg{ max-width: 85%; padding: 10px 12px; border-radius: 12px; line-height: 1.4; word-break: break-word; }",
-      "." + PREFIX + "msg-user{ align-self: flex-end; background: #2563eb; color: #fff; }",
+      "." + PREFIX + "msg-user{ align-self: flex-end; background: " + config.color + "; color: #fff; }",
       "." + PREFIX + "msg-bot{ align-self: flex-start; background: #fff; border: 1px solid #e2e8f0; }",
       "." + PREFIX + "msg-error{ align-self: flex-start; background: #fef2f2; border: 1px solid #fecaca; color: #b91c1c; }",
       "." + PREFIX + "input-row{ padding: 12px; flex-shrink: 0; display: flex; gap: 8px; background: #fff; border-top: 1px solid #e2e8f0; }",
       "." + PREFIX + "input-row input{ flex: 1; padding: 10px 12px; border: 1px solid #e2e8f0; border-radius: 8px; font-size: 14px; outline: none; }",
-      "." + PREFIX + "input-row input:focus{ border-color: #2563eb; }",
-      "." + PREFIX + "input-row button{ padding: 10px 16px; border: none; border-radius: 8px; background: #2563eb; color: #fff; font-weight: 500; cursor: pointer; }",
+      "." + PREFIX + "input-row input:focus{ border-color: " + config.color + "; }",
+      "." + PREFIX + "input-row button{ padding: 10px 16px; border: none; border-radius: 8px; background: " + config.color + "; color: #fff; font-weight: 500; cursor: pointer; }",
       "." + PREFIX + "input-row button:disabled{ opacity: 0.6; cursor: not-allowed; }",
       "." + PREFIX + "hidden{ display: none !important; }"
     ].join("\n");
@@ -137,7 +137,7 @@
         if (!resolved) {
           resolved = true;
           useRest = true;
-          try { ws.close(); } catch (e) {}
+          try { ws.close(); } catch (e) { }
           restFallback();
         }
       }, 25000);
@@ -268,10 +268,10 @@
 
   function loadConfig(cb) {
     var xhr = new XMLHttpRequest();
-    xhr.open("GET", apiUrl + "/chatbot-config/" + encodeURIComponent(userId) + "/" + encodeURIComponent(botId));
+    var configUrl = apiUrl + "/chatbot-config/" + encodeURIComponent(userId) + "/" + encodeURIComponent(botId) + "?t=" + new Date().getTime();
+    xhr.open("GET", configUrl);
     xhr.onreadystatechange = function () {
       if (xhr.readyState !== 4) {
-        cb();
         return;
       }
       try {
@@ -282,7 +282,7 @@
           if (res.color) config.color = res.color;
           if (res.logo) config.logo = res.logo;
         }
-      } catch (e) {}
+      } catch (e) { }
       cb();
     };
     xhr.onerror = function () { cb(); };
